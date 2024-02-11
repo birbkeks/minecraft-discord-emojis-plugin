@@ -1,5 +1,6 @@
 package team.unnamed.creativeglyphs.plugin;
 
+import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -7,36 +8,66 @@ import org.bukkit.plugin.java.JavaPlugin;
 import team.unnamed.creative.central.CreativeCentralProvider;
 import team.unnamed.creative.central.event.pack.ResourcePackGenerateEvent;
 import team.unnamed.creativeglyphs.plugin.command.RootCommand;
-import team.unnamed.creativeglyphs.plugin.hook.essentialsdiscord.EssentialsDiscordHook;
+import team.unnamed.creativeglyphs.plugin.integration.carbon.CarbonChatIntegration;
+import team.unnamed.creativeglyphs.plugin.integration.essentialsdiscord.EssentialsDiscordIntegration;
 import team.unnamed.creativeglyphs.plugin.listener.misc.AnvilEditListener;
 import team.unnamed.creativeglyphs.plugin.listener.misc.CommandPreprocessListener;
 import team.unnamed.creativeglyphs.plugin.util.ArtemisGlyphImporter;
 import team.unnamed.creativeglyphs.plugin.listener.bus.EventListener;
-import team.unnamed.creativeglyphs.plugin.hook.PluginHook;
-import team.unnamed.creativeglyphs.plugin.hook.PluginHookManager;
-import team.unnamed.creativeglyphs.plugin.hook.discordsrv.DiscordSRVHook;
-import team.unnamed.creativeglyphs.plugin.hook.ezchat.EzChatHook;
-import team.unnamed.creativeglyphs.plugin.hook.miniplaceholders.MiniPlaceholdersHook;
-import team.unnamed.creativeglyphs.plugin.hook.papi.PlaceholderApiHook;
-import team.unnamed.creativeglyphs.plugin.hook.townychat.TownyChatHook;
+import team.unnamed.creativeglyphs.plugin.integration.PluginIntegration;
+import team.unnamed.creativeglyphs.plugin.integration.IntegrationManager;
+import team.unnamed.creativeglyphs.plugin.integration.discordsrv.DiscordSRVIntegration;
+import team.unnamed.creativeglyphs.plugin.integration.ezchat.EzChatIntegration;
+import team.unnamed.creativeglyphs.plugin.integration.miniplaceholders.MiniPlaceholdersIntegration;
+import team.unnamed.creativeglyphs.plugin.integration.papi.PlaceholderAPIIntegration;
+import team.unnamed.creativeglyphs.plugin.integration.townychat.TownyChatIntegration;
 import team.unnamed.creativeglyphs.plugin.listener.chat.ChatCompletionsListener;
 import team.unnamed.creativeglyphs.plugin.listener.bus.EventBus;
 import team.unnamed.creativeglyphs.plugin.listener.ListenerFactory;
+import team.unnamed.creativeglyphs.plugin.util.GitHubUpdateChecker;
 import team.unnamed.creativeglyphs.resourcepack.ResourcePackGlyphWriter;
 
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Collection;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 
-public class CreativeGlyphsPlugin extends JavaPlugin {
+public final class CreativeGlyphsPlugin extends JavaPlugin {
 
     private PluginGlyphMap registry;
     private ArtemisGlyphImporter importer;
 
     @Override
     public void onEnable() {
+        final Path dataFolder = getDataFolder().toPath();
+
+        //#region Backwards compatibility (creative-glyphs was called unemojis)
+        // unemojis should be removed
+        if (Bukkit.getPluginManager().isPluginEnabled("unemojis")) {
+            getLogger().severe(
+                    "Can't enable creative-glyphs since unemojis is enabled! Please remove " +
+                            "unemojis JAR file only (NOT THE unemojis FOLDER, IT WILL BE AUTOMATICALLY" +
+                            " RENAMED). Note that creative-glyphs is the new, improved version of unemojis."
+            );
+            Bukkit.getPluginManager().disablePlugin(this);
+            return;
+        }
+
+        // Rename unemojis data folder to creative-glyphs if it exists
+        final Path pluginsFolder = Bukkit.getPluginsFolder().toPath();
+        final Path unemojisDataFolder = pluginsFolder.resolve("unemojis");
+        if (Files.isDirectory(unemojisDataFolder)) {
+            try {
+                Files.move(unemojisDataFolder, dataFolder);
+            } catch (final IOException e) {
+                throw new IllegalStateException("(Backwards compatibility) Couldn't" +
+                        " rename 'unemojis' folder to '" + dataFolder.getFileName() + "'", e);
+            }
+        }
+        //#endregion
 
         saveDefaultConfig();
 
@@ -59,16 +90,17 @@ public class CreativeGlyphsPlugin extends JavaPlugin {
         Objects.requireNonNull(getCommand("emojis"), "'emojis' command not registered")
                 .setExecutor(new RootCommand(this).asExecutor());
 
-        Set<PluginHook> hooks = PluginHookManager.create()
-                .registerHook(new EzChatHook(this, registry))
-                .registerHook(new TownyChatHook(this, registry))
-                .registerHook(new PlaceholderApiHook(this, registry))
-                .registerHook(new DiscordSRVHook(registry))
-                .registerHook(new MiniPlaceholdersHook(registry))
-                .registerHook(new EssentialsDiscordHook(this, registry))
-                .hook();
+        Set<PluginIntegration> hooks = IntegrationManager.integrationManager(this)
+                .register(new CarbonChatIntegration(this))
+                .register(new EzChatIntegration(this, registry))
+                .register(new TownyChatIntegration(this, registry))
+                .register(new PlaceholderAPIIntegration(this, registry))
+                .register(new DiscordSRVIntegration(registry))
+                .register(new MiniPlaceholdersIntegration(this))
+                .register(new EssentialsDiscordIntegration(this, registry))
+                .check();
 
-        if (hooks.stream().noneMatch(hook -> hook instanceof PluginHook.Chat)) {
+        if (hooks.stream().noneMatch(hook -> hook instanceof PluginIntegration.Chat)) {
             // if no chat plugin hooks, let's register our own listener
             EventPriority priority = EventPriority.valueOf(getConfig().getString(
                     "compat.listener-priority",
@@ -99,6 +131,9 @@ public class CreativeGlyphsPlugin extends JavaPlugin {
 
         // Metrics
         new Metrics(this, 17168);
+
+        // GitHub Update Checker
+        GitHubUpdateChecker.checkAsync(this);
     }
 
     private void listen(Listener listener) {
